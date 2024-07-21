@@ -5,17 +5,24 @@ if [ $# -ne 3 ]; then
     exit 1
 fi
 
+root="$PWD"
 cli="$1"
+if [ ! -f "$cli" ]; then
+    echo "not found: $cli"
+    exit 1
+fi
 cd $2 || (echo "not found: $2"; exit 1)
 cd $3 || (echo "not found: $3"; exit 1)
 
+ts=$(date +%s)
+lf="$ts.err"
 succ=0
 succ_loc=0
 fail=0
 fail_loc=0
 for f in $(fd -e "$2"); do
     loc=$(cat $(realpath "$f") | wc -l)
-    if "$cli" ast "$(realpath "$f")" >/dev/null 2>&1; then
+    if "$cli" ast "$(realpath "$f")" -o /dev/null -c &>>"$root/$lf"; then
         succ=$((succ+1))
         succ_loc=$((succ_loc+loc))
     else
