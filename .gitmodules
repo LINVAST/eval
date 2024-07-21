@@ -12,3 +12,6 @@
 	path = java/graal
 	url = https://github.com/oracle/graal
 	shallow = true
+[submodule "CLI"]
+	path = CLI
+	url = https://github.com/LINVAST/CLI.git

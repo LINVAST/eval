@@ -1,12 +1,17 @@
 #!/bin/bash
 
 if [ $# -ne 3 ]; then
-    echo "usage: $0 linvast-cli-path language proj"
+    echo "usage: $0 language proj"
     exit 1
 fi
 
+echo "Building linvast-cli"
+pushd CLI
+dotnet publish -r linux-x64 -p:PublishSingleFile=true --self-contained false
+popd
+
 root="$PWD"
-cli="$1"
+cli="$PWD/CLI/CLI/bin/Release/net8.0/linux-x64/CLI"
 if [ ! -f "$cli" ]; then
     echo "not found: $cli"
     exit 1
