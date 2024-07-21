@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if [ $# -ne 3 ]; then
+if [ $# -ne 2 ]; then
     echo "usage: $0 language proj"
     exit 1
 fi
@@ -16,8 +16,8 @@ if [ ! -f "$cli" ]; then
     echo "not found: $cli"
     exit 1
 fi
+cd $1 || (echo "not found: $1"; exit 1)
 cd $2 || (echo "not found: $2"; exit 1)
-cd $3 || (echo "not found: $3"; exit 1)
 
 ts=$(date +%s)
 lf="$ts.err"
@@ -25,7 +25,7 @@ succ=0
 succ_loc=0
 fail=0
 fail_loc=0
-for f in $(fd -e "$2"); do
+for f in $(fd -e "$1"); do
     loc=$(cat $(realpath "$f") | wc -l)
     if "$cli" ast "$(realpath "$f")" -o /dev/null -c &>>"$root/$lf"; then
         succ=$((succ+1))
