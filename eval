@@ -1,0 +1,27 @@
+#!/bin/bash
+
+if [ $# -ne 3 ]; then
+    echo "usage: $0 linvast-cli-path language proj"
+    exit 1
+fi
+
+cli="$1"
+cd $2 || (echo "not found: $2"; exit 1)
+cd $3 || (echo "not found: $3"; exit 1)
+
+succ=0
+succ_loc=0
+fail=0
+fail_loc=0
+for f in $(fd -e "$2"); do
+    loc=$(cat $(realpath "$f") | wc -l)
+    if "$cli" ast "$(realpath "$f")" >/dev/null 2>&1; then
+        succ=$((succ+1))
+        succ_loc=$((succ_loc+loc))
+    else
+        fail=$((fail+1))
+        fail_loc=$((fail_loc+loc))
+    fi
+    printf "\rsucc: %s (%s); fail: %s (%s)" $succ $succ_loc $fail $fail_loc
+done
+echo
