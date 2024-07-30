@@ -17,3 +17,6 @@
 	path = CLI
 	url = https://github.com/LINVAST/CLI.git
 	shallow = true
+[submodule "java/jdk11"]
+	path = java/jdk11
+	url = https://github.com/openjdk/jdk11u
