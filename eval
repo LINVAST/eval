@@ -1,39 +1,228 @@
 #!/bin/bash
 
-if [ $# -ne 2 ]; then
-    echo "usage: $0 language proj"
+whole_files=0
+positional=()
+exclude_dirs=("tests" "test" "vendor" "node_modules")
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --whole-files) whole_files=1; shift ;;
+        -h|--help) echo "usage: $0 [--whole-files] [folder]"; exit 0 ;;
+        --) shift; while [ $# -gt 0 ]; do positional+=("$1"); shift; done ;;
+        -*) echo "usage: $0 [--whole-files] [folder]"; exit 1 ;;
+        *) positional+=("$1"); shift ;;
+    esac
+done
+if [ ${#positional[@]} -gt 1 ]; then
+    echo "usage: $0 [--function-level] [folder]"
     exit 1
 fi
 
-echo "Building linvast-cli"
-pushd CLI
-dotnet publish -r linux-x64 -p:PublishSingleFile=true --self-contained false
-popd
-
 root="$PWD"
-cli="$PWD/CLI/CLI/bin/Release/net8.0/linux-x64/CLI"
+
+target="${positional[0]:-.}"
+# normalize: strip optional leading "./" and trailing "/"
+case "$target" in
+    ./) target="${target#./}" ;;
+esac
+target="${target%/}"
+
+# Map language directory names to file extensions
+ext_for_lang() {
+    case "$1" in
+        python) echo "py" ;;
+        kotlin) echo "kt" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+# Map file extensions to language names (must match LANGUAGES keys in the extractor)
+lang_for_ext() {
+    case "$1" in
+        py) echo "python" ;;
+        kt) echo "kotlin" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+echo "Building linvast-cli"
+pushd "$root/CLI" >/dev/null
+dotnet publish -r linux-x64 -p:PublishSingleFile=true --self-contained false
+popd >/dev/null
+
+cli="$root/CLI/CLI/bin/Release/net10.0/linux-x64/CLI"
 if [ ! -f "$cli" ]; then
     echo "not found: $cli"
     exit 1
 fi
-cd $1 || (echo "not found: $1"; exit 1)
-cd $2 || (echo "not found: $2"; exit 1)
+
+extractor="$root/extractors/extract-functions.py"
+# languages supported by function-level mode (must match LANGUAGES in the extractor)
+fun_langs="c go java kotlin lua python"
+is_fun_lang() { case " $fun_langs " in *" $1 "*) return 0;; esac; return 1; }
+if [ "$whole_files" != "1" ]; then
+    if [ ! -f "$extractor" ]; then
+        echo "function-level extractor not found: $extractor" >&2
+        exit 1
+    fi
+    supported=$(python3 "$extractor" --langs 2>/dev/null)
+    if [ -z "$supported" ]; then
+        echo "extractor failed to start (needs tree-sitter CLI + python3)" >&2
+        exit 1
+    fi
+fi
+tmpdir="$(mktemp -d /tmp/linvast-wrapper.XXXXXX)"
+trap 'rm -rf "$tmpdir"' EXIT
 
 ts=$(date +%s)
-lf="$ts.err"
-succ=0
-succ_loc=0
-fail=0
-fail_loc=0
-for f in $(fd -e "$1"); do
-    loc=$(cat $(realpath "$f") | wc -l)
-    if "$cli" ast "$(realpath "$f")" -o /dev/null -c &>>"$root/$lf"; then
-        succ=$((succ+1))
-        succ_loc=$((succ_loc+loc))
-    else
-        fail=$((fail+1))
-        fail_loc=$((fail_loc+loc))
+log="$root/$ts.err"
+: > "$log"
+
+# collect (base_dir, extension) pairs to evaluate
+bases=()
+exts=()
+if [ "$target" = "." ] || [ -z "$target" ]; then
+    # evaluate everything: each language folder under lang/ is a base.
+    # a language folder is one that contains files with its extension.
+    for d in "$root/lang"/*/; do
+        [ -d "$d" ] || continue
+        name="$(basename "$d")"
+        ext="$(ext_for_lang "$name")"
+        if find "$d" -type f -name "*.$ext" -print -quit | grep -q .; then
+            bases+=("$d")
+            exts+=("$ext")
+        fi
+    done
+else
+    # target is a language path: "lang/<lang>" or just "<lang>"
+    case "$target" in
+        lang/*) lang_name="$(basename "$target")" ;;
+        *)      lang_name="$target" ;;
+    esac
+    bases+=("$root/lang/$lang_name")
+    exts+=("$(ext_for_lang "$lang_name")")
+fi
+
+# list project directories under $base that should be evaluated as one unit.
+# - if $base is a language container (direct child of lang/),
+#   its immediate subdirectories that contain source files are the projects.
+# - otherwise $base is itself a single project scanned recursively.
+collect_projects() {
+    local base="$1" ext="$2"
+    local parent; parent="$(basename "$(dirname "$base")")"
+    if [ "$parent" = "lang" ]; then
+        find "$base" -mindepth 1 -maxdepth 1 -type d | sort | while IFS= read -r d; do
+            if find "$d" -type f -name "*.$ext" -print -quit | grep -q .; then
+                echo "$d"
+            fi
+        done
+        return
     fi
-    printf "\rsucc: %s (%s); fail: %s (%s)" $succ $succ_loc $fail $fail_loc
+    if find "$base" -type f -name "*.$ext" -print -quit | grep -q .; then
+        echo "$base"
+    fi
+}
+
+# seconds before a single linvast invocation is killed (guards against parser hangs)
+fun_timeout="${FUN_TIMEOUT:-60}"
+
+run_linvast() {
+    timeout "$fun_timeout" "$cli" ast "$1" -o /dev/null -c >>"$log" 2>&1
+}
+
+g_succ=0
+g_succ_loc=0
+g_fail=0
+g_fail_loc=0
+
+g_constr_total=0
+g_constr_succ=0
+g_constr_fail=0
+
+if [ ${#bases[@]} -eq 0 ]; then
+    echo "no source projects found"
+    exit 0
+fi
+
+for i in "${!bases[@]}"; do
+    base="${bases[$i]}"
+    ext="${exts[$i]}"
+
+    mapfile -t projects < <(collect_projects "$base" "$ext")
+
+    for proj in "${projects[@]}"; do
+        succ=0
+        succ_loc=0
+        fail=0
+        fail_loc=0
+        constr_total=0
+        constr_succ=0
+        constr_fail=0
+        echo "--- $proj ($ext) ---" | tee -a "$log"
+        pushd "$proj" >/dev/null
+        for f in $(fd -e "$ext"); do
+            skip=0
+            for ex in "${exclude_dirs[@]}"; do
+                case "$f" in
+                    *"$ex"*) skip=1; break ;;
+                esac
+            done
+            [ "$skip" = "1" ] && continue
+            if [ "$whole_files" != "1" ] && is_fun_lang "$(lang_for_ext "$ext")"; then
+                f_total=0
+                f_succ=0
+                f_fail=0
+                while IFS= read -r func; do
+                    [ -z "$func" ] && continue
+                    f_total=$((f_total+1))
+                    constr_total=$((constr_total+1))
+                    g_constr_total=$((g_constr_total+1))
+                    wrapper="$tmpdir/wrapper.$ext"
+                    printf '%s' "$func" | jq -r '.wrapped' > "$wrapper"
+                    if run_linvast "$wrapper"; then
+                        f_succ=$((f_succ+1))
+                        constr_succ=$((constr_succ+1))
+                        g_constr_succ=$((g_constr_succ+1))
+                    else
+                        f_fail=$((f_fail+1))
+                        constr_fail=$((constr_fail+1))
+                        g_constr_fail=$((g_constr_fail+1))
+                        printf '%s\n' "$func" | jq -c --arg file "$f" \
+                            '{file:$file, name:.name, startLine:.startLine, endLine:.endLine, type:.type, result:"fail"}' >> "$log"
+                    fi
+                done < <(python3 "$extractor" "$(lang_for_ext "$ext")" "$f" 2>>"$log")
+                printf "  [%s] constructs: %s total, %s succ, %s fail\n" "$f" "$f_total" "$f_succ" "$f_fail"
+            else
+                loc=$(wc -l < "$f")
+                if run_linvast "$f"; then
+                    succ=$((succ+1))
+                    succ_loc=$((succ_loc+loc))
+                else
+                    fail=$((fail+1))
+                    fail_loc=$((fail_loc+loc))
+                fi
+                printf "\r  [%s] succ: %s (%s); fail: %s (%s)" "$proj" "$succ" "$succ_loc" "$fail" "$fail_loc"
+            fi
+        done
+        popd >/dev/null
+        echo
+        if [ "$whole_files" != "1" ] && is_fun_lang "$(lang_for_ext "$ext")"; then
+            echo "  => $proj summary: constructs total=$constr_total succ=$constr_succ fail=$constr_fail"
+        else
+            echo "  => $proj summary: files succ=$succ ($succ_loc) fail=$fail ($fail_loc)"
+        fi
+        g_succ=$((g_succ+succ))
+        g_succ_loc=$((g_succ_loc+succ_loc))
+        g_fail=$((g_fail+fail))
+        g_fail_loc=$((g_fail_loc+fail_loc))
+    done
 done
+
 echo
+echo "=== TOTAL ==="
+if [ "$whole_files" = "1" ]; then
+    printf "succ: %s (%s); fail: %s (%s)\n" "$g_succ" "$g_succ_loc" "$g_fail" "$g_fail_loc"
+else
+    printf "constructs: total %s, succ %s, fail %s\n" "$g_constr_total" "$g_constr_succ" "$g_constr_fail"
+    printf "files (file-level for non-supported languages): succ %s (%s); fail %s (%s)\n" "$g_succ" "$g_succ_loc" "$g_fail" "$g_fail_loc"
+fi
+echo "log: $log"

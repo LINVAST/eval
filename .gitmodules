@@ -1,22 +1,173 @@
-[submodule "java/antlr4"]
-	path = java/antlr4
-	url = https://github.com/antlr/antlr4
+[submodule "lang/c/8cc"]
+	path = lang/c/8cc
+	url = https://github.com/rui314/8cc.git
 	shallow = true
 
-[submodule "java/jdk"]
-	path = java/jdk
-	url = https://github.com/openjdk/jdk
+[submodule "lang/c/cmus"]
+	path = lang/c/cmus
+	url = https://github.com/cmus/cmus.git
 	shallow = true
 
-[submodule "java/graal"]
-	path = java/graal
-	url = https://github.com/oracle/graal
+[submodule "lang/c/linenoise"]
+	path = lang/c/linenoise
+	url = https://github.com/antirez/linenoise
+	shallow = true
+
+[submodule "lang/c/miniml-parser"]
+	path = lang/c/miniml-parser
+	url = https://github.com/kiishor/miniML-Parser
+	shallow = true
+
+[submodule "lang/c/neovim"]
+	path = lang/c/neovim
+	url = https://github.com/neovim/neovim.git
+	shallow = true
+
+[submodule "lang/c/packcc"]
+	path = lang/c/packcc
+	url = https://github.com/arithy/packcc
+	shallow = true
+
+[submodule "lang/c/picoc"]
+	path = lang/c/picoc
+	url = https://gitlab.com/zsaleeba/picoc.git
+	shallow = true
+
+[submodule "lang/c/smalljsonparser"]
+	path = lang/c/smalljsonparser
+	url = https://github.com/DagAgren/SmallJSONParser
+	shallow = true
+
+[submodule "lang/c/tinyexpr"]
+	path = lang/c/tinyexpr
+	url = https://github.com/codeplea/tinyexpr
 	shallow = true
 
 [submodule "CLI"]
 	path = CLI
 	url = https://github.com/LINVAST/CLI.git
 	shallow = true
-[submodule "java/jdk11"]
-	path = java/jdk11
+
+[submodule "lang/go/cobra"]
+	path = lang/go/cobra
+	url = https://github.com/spf13/cobra
+	shallow = true
+
+[submodule "lang/go/gum"]
+	path = lang/go/gum
+	url = https://github.com/charmbracelet/gum
+	shallow = true
+
+[submodule "lang/go/hcl"]
+	path = lang/go/hcl
+	url = https://github.com/hashicorp/hcl
+	shallow = true
+
+[submodule "lang/go/lf"]
+	path = lang/go/lf
+	url = https://github.com/gokcehan/lf
+	shallow = true
+
+[submodule "lang/go/task"]
+	path = lang/go/task
+	url = https://github.com/go-task/task
+	shallow = true
+
+[submodule "lang/java/antlr4"]
+	path = lang/java/antlr4
+	url = https://github.com/antlr/antlr4
+	shallow = true
+
+[submodule "lang/java/graal"]
+	path = lang/java/graal
+	url = https://github.com/oracle/graal
+	shallow = true
+
+[submodule "lang/java/javapoet"]
+	path = lang/java/javapoet
+	url = https://github.com/square/javapoet
+	shallow = true
+
+[submodule "lang/java/jdk"]
+	path = lang/java/jdk
+	url = https://github.com/openjdk/jdk
+	shallow = true
+
+[submodule "lang/java/jdk11"]
+	path = lang/java/jdk11
 	url = https://github.com/openjdk/jdk11u
+	shallow = true
+
+[submodule "lang/lua/bump"]
+	path = lang/lua/bump
+	url = https://github.com/kikito/bump.lua
+	shallow = true
+
+[submodule "lang/lua/lite"]
+	path = lang/lua/lite
+	url = https://github.com/rxi/lite
+	shallow = true
+
+[submodule "lang/lua/lite-plugins"]
+	path = lang/lua/lite-plugins
+	url = https://github.com/rxi/lite-plugins
+	shallow = true
+
+[submodule "lang/lua/luarocks"]
+	path = lang/lua/luarocks
+	url = https://github.com/luarocks/luarocks
+	shallow = true
+
+[submodule "lang/lua/middleclass"]
+	path = lang/lua/middleclass
+	url = https://github.com/kikito/middleclass
+	shallow = true
+[submodule "lang/python/requests"]
+	path = lang/python/requests
+	url = https://github.com/psf/requests
+	shallow = true
+
+[submodule "lang/python/click"]
+	path = lang/python/click
+	url = https://github.com/pallets/click
+	shallow = true
+
+[submodule "lang/python/httpx"]
+	path = lang/python/httpx
+	url = https://github.com/encode/httpx
+	shallow = true
+
+[submodule "lang/python/pytest"]
+	path = lang/python/pytest
+	url = https://github.com/pytest-dev/pytest
+	shallow = true
+
+[submodule "lang/python/flask"]
+	path = lang/python/flask
+	url = https://github.com/pallets/flask
+	shallow = true
+
+[submodule "lang/kotlin/kotlinx-benchmark"]
+	path = lang/kotlin/kotlinx-benchmark
+	url = https://github.com/Kotlin/kotlinx-benchmark
+	shallow = true
+
+[submodule "lang/kotlin/kotlin-benchmarks"]
+	path = lang/kotlin/kotlin-benchmarks
+	url = https://github.com/Kotlin/kotlin-benchmarks
+	shallow = true
+
+[submodule "lang/kotlin/detekt"]
+	path = lang/kotlin/detekt
+	url = https://github.com/detekt/detekt
+	shallow = true
+
+[submodule "lang/kotlin/ktor"]
+	path = lang/kotlin/ktor
+	url = https://github.com/ktorio/ktor
+	shallow = true
+
+[submodule "lang/kotlin/okhttp"]
+	path = lang/kotlin/okhttp
+	url = https://github.com/square/okhttp
+	shallow = true
