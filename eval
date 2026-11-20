@@ -74,8 +74,42 @@ if [ ${#missing_gitlinks[@]} -gt 0 ]; then
     exit 1
 fi
 
-echo "Initializing submodules: ${submodule_paths[*]}"
-if ! git -C "$root" submodule update --init --recursive -- "${submodule_paths[@]}"; then
+initialize_all=0
+update_paths=("CLI")
+for target in "${targets[@]}"; do
+    if [ "$target" = "." ] || [ "$target" = "lang" ]; then
+        initialize_all=1
+        break
+    fi
+
+    language_path="${target#lang/}"
+    if [[ "$language_path" != */* ]]; then
+        # Use the language directory as one pathspec; Git then selects all
+        # tracked submodules below it.
+        update_paths+=("$target")
+        continue
+    fi
+
+    # For a project path (or a directory inside one), update its containing
+    # submodule. This also handles paths nested below a submodule root.
+    for module_path in "${submodule_paths[@]}"; do
+        [ "$module_path" = "CLI" ] && continue
+        if [ "$module_path" = "$target" ] || \
+            [[ "$module_path" == "$target/"* ]] || \
+            [[ "$target" == "$module_path/"* ]]; then
+            update_paths+=("$module_path")
+        fi
+    done
+done
+
+if [ "$initialize_all" = "1" ]; then
+    echo "Initializing all submodules"
+    update_cmd=(git -C "$root" submodule update --init --recursive)
+else
+    echo "Initializing submodules: ${update_paths[*]}"
+    update_cmd=(git -C "$root" submodule update --init --recursive -- "${update_paths[@]}")
+fi
+if ! "${update_cmd[@]}"; then
     echo "failed to initialize required submodules" >&2
     exit 1
 fi
@@ -100,10 +134,12 @@ lang_for_ext() {
 
 echo "Building linvast-cli"
 pushd "$root/CLI" >/dev/null
-dotnet publish -r linux-x64 -p:PublishSingleFile=true --self-contained false
+dotnet publish "$root/CLI/CLI/CLI.csproj" -r linux-x64 \
+    -p:PublishSingleFile=true --self-contained false \
+    -o "$root/CLI/CLI/bin/Release/eval-publish"
 popd >/dev/null
 
-cli="$root/CLI/CLI/bin/Release/net10.0/linux-x64/CLI"
+cli="$root/CLI/CLI/bin/Release/eval-publish/CLI"
 if [ ! -f "$cli" ]; then
     echo "not found: $cli"
     exit 1
