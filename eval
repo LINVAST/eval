@@ -48,6 +48,7 @@ done
 # submodules related to the requested paths; selecting the repository root or
 # lang/ selects all language submodules.
 submodule_paths=("CLI")
+missing_gitlinks=()
 while read -r _ module_path; do
     [ -z "$module_path" ] && continue
     [ "$module_path" = "CLI" ] && continue
@@ -56,11 +57,22 @@ while read -r _ module_path; do
             [ "$module_path" = "$target" ] || \
             [[ "$module_path" == "$target/"* ]] || \
             [[ "$target" == "$module_path/"* ]]; then
-            submodule_paths+=("$module_path")
+            index_entry="$(git -C "$root" ls-files --stage -- "$module_path")"
+            case "$index_entry" in
+                160000\ *) submodule_paths+=("$module_path") ;;
+                *) missing_gitlinks+=("$module_path") ;;
+            esac
             break
         fi
     done
 done < <(git -C "$root" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null)
+
+if [ ${#missing_gitlinks[@]} -gt 0 ]; then
+    echo "these requested submodules are listed in .gitmodules but are not recorded as gitlinks in this checkout:" >&2
+    printf '  %s\n' "${missing_gitlinks[@]}" >&2
+    echo "Commit and push the submodule entries in the parent repository, then update or reclone it." >&2
+    exit 1
+fi
 
 echo "Initializing submodules: ${submodule_paths[*]}"
 if ! git -C "$root" submodule update --init --recursive -- "${submodule_paths[@]}"; then

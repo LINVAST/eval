@@ -13,6 +13,8 @@ cd eval
 
 You do not need to clone with `--recurse-submodules`; `eval` fetches the required submodules on demand. Running it without paths selects every language, so it downloads all language submodules. Function-level mode is the default.
 
+Each submodule must be recorded in the parent repository as a gitlink as well as listed in `.gitmodules`. If `eval` reports a requested submodule is not recorded, commit and push that submodule entry in the parent repository before running `eval` from a fresh clone.
+
 #### C
 
 | Repository | Constructs | Passed | Failed | Pass% |
