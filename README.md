@@ -1,6 +1,17 @@
 # Evaluation of LINVAST AST builders on open-source repositories
 
-*Run with:* `./eval <folder>` (function-level is the default; Java, Go, Lua, Kotlin, C supported). Whole-file mode: `./eval --whole-files <folder>`.
+Clone the repository, enter its directory, and run `eval` with the language or project paths to evaluate. The script initializes the `CLI` submodule it needs and downloads only the language submodules selected by those paths:
+
+```sh
+git clone <repository-url> eval
+cd eval
+./eval lang/python/requests       # one project; "python/requests" also works
+./eval lang/c lang/go             # selected languages
+./eval --whole-files lang/lua     # whole-file mode
+./eval                            # all languages and their submodules
+```
+
+You do not need to clone with `--recurse-submodules`; `eval` fetches the required submodules on demand. Running it without paths selects every language, so it downloads all language submodules. Function-level mode is the default.
 
 #### C
 
@@ -74,8 +85,10 @@
 #### How it works
 
 ```
-eval <folder>            # function-level (default); whole-file: add --whole-files
-  └─ extractors/extract-functions.py <lang> <file>  →  JSONL (one object per construct)
+eval [path ...]           # initialize CLI and submodules for these paths, then evaluate them
+  ├─ paths: lang/python, python, lang/python/requests, or python/requests
+  └─ for each project and source file:
+     └─ extractors/extract-functions.py <lang> <file>  →  JSONL (one object per construct)
         └─ tree-sitter query:
              constructor + method + class/interface/enum/annotation_type (java)
              function_declaration + method_declaration + type_declaration (go)
@@ -105,7 +118,7 @@ Per-language wrappers are minimal and language-correct:
 
 - `tree-sitter` CLI (v0.26+)
 - `jq`
-- `git` + network access on first run (the extractor clones the tree-sitter grammars into `extractors/tree-sitter-{java,go,lua,c,python}/` and `extractors/tree-sitter-kotlin/` and builds a native `<lang>.so` parser with `tree-sitter build`). Parsers are cached after the first build.
+- `git` + network access on first run (the script initializes the `CLI` submodule and submodules for the requested language/project paths; the extractor also clones tree-sitter grammars into `extractors/tree-sitter-{java,go,lua,c,python}/` and `extractors/tree-sitter-kotlin/` and builds a native `<lang>.so` parser with `tree-sitter build`). Parsers are cached after the first build.
 - `dotnet` SDK (to build the `linvast` CLI, same as file-level mode)
 
 #### Limitations

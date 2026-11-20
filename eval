@@ -3,28 +3,70 @@
 whole_files=0
 positional=()
 exclude_dirs=("tests" "test" "vendor" "node_modules")
+usage() { echo "usage: $0 [--whole-files] [path ...]"; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --whole-files) whole_files=1; shift ;;
-        -h|--help) echo "usage: $0 [--whole-files] [folder]"; exit 0 ;;
+        -h|--help) usage; exit 0 ;;
         --) shift; while [ $# -gt 0 ]; do positional+=("$1"); shift; done ;;
-        -*) echo "usage: $0 [--whole-files] [folder]"; exit 1 ;;
+        -*) usage; exit 1 ;;
         *) positional+=("$1"); shift ;;
     esac
 done
-if [ ${#positional[@]} -gt 1 ]; then
-    echo "usage: $0 [--function-level] [folder]"
-    exit 1
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ ${#positional[@]} -eq 0 ]; then
+    positional=(".")
 fi
 
-root="$PWD"
+# Normalize targets to repository-relative paths. A bare language name such as
+# "python" is shorthand for "lang/python"; "c/8cc" is shorthand for
+# "lang/c/8cc".
+normalize_target() {
+    local target="$1"
+    while [[ "$target" == ./* ]]; do target="${target#./}"; done
+    target="${target%/}"
+    case "$target" in
+        ""|.) echo "." ;;
+        lang|lang/*) echo "$target" ;;
+        */*) echo "lang/$target" ;;
+        *) echo "lang/$target" ;;
+    esac
+}
 
-target="${positional[0]:-.}"
-# normalize: strip optional leading "./" and trailing "/"
-case "$target" in
-    ./) target="${target#./}" ;;
-esac
-target="${target%/}"
+targets=()
+for requested in "${positional[@]}"; do
+    normalized="$(normalize_target "$requested")"
+    case "$normalized" in
+        /*|../*|*/../*|*/..) echo "path must be inside the repository: $requested" >&2; exit 1 ;;
+    esac
+    targets+=("$normalized")
+done
+
+# Always fetch the CLI needed to run the evaluation. Fetch only language
+# submodules related to the requested paths; selecting the repository root or
+# lang/ selects all language submodules.
+submodule_paths=("CLI")
+while read -r _ module_path; do
+    [ -z "$module_path" ] && continue
+    [ "$module_path" = "CLI" ] && continue
+    for target in "${targets[@]}"; do
+        if [ "$target" = "." ] || [ "$target" = "lang" ] || \
+            [ "$module_path" = "$target" ] || \
+            [[ "$module_path" == "$target/"* ]] || \
+            [[ "$target" == "$module_path/"* ]]; then
+            submodule_paths+=("$module_path")
+            break
+        fi
+    done
+done < <(git -C "$root" config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null)
+
+echo "Initializing submodules: ${submodule_paths[*]}"
+if ! git -C "$root" submodule update --init --recursive -- "${submodule_paths[@]}"; then
+    echo "failed to initialize required submodules" >&2
+    exit 1
+fi
 
 # Map language directory names to file extensions
 ext_for_lang() {
@@ -80,27 +122,32 @@ log="$root/$ts.err"
 # collect (base_dir, extension) pairs to evaluate
 bases=()
 exts=()
-if [ "$target" = "." ] || [ -z "$target" ]; then
-    # evaluate everything: each language folder under lang/ is a base.
-    # a language folder is one that contains files with its extension.
-    for d in "$root/lang"/*/; do
-        [ -d "$d" ] || continue
-        name="$(basename "$d")"
-        ext="$(ext_for_lang "$name")"
-        if find "$d" -type f -name "*.$ext" -print -quit | grep -q .; then
-            bases+=("$d")
-            exts+=("$ext")
-        fi
-    done
-else
-    # target is a language path: "lang/<lang>" or just "<lang>"
-    case "$target" in
-        lang/*) lang_name="$(basename "$target")" ;;
-        *)      lang_name="$target" ;;
-    esac
-    bases+=("$root/lang/$lang_name")
+for target in "${targets[@]}"; do
+    if [ "$target" = "." ] || [ "$target" = "lang" ]; then
+        # Evaluate all language folders; each one contains project submodules.
+        for d in "$root/lang"/*/; do
+            [ -d "$d" ] || continue
+            name="$(basename "$d")"
+            ext="$(ext_for_lang "$name")"
+            if find "$d" -type f -name "*.$ext" -print -quit | grep -q .; then
+                bases+=("$d")
+                exts+=("$ext")
+            fi
+        done
+        continue
+    fi
+
+    relative_path="$target"
+    language_path="${target#lang/}"
+    lang_name="${language_path%%/*}"
+    base="$root/$relative_path"
+    if [ ! -d "$base" ]; then
+        echo "requested path not found: $target" >&2
+        exit 1
+    fi
+    bases+=("$base")
     exts+=("$(ext_for_lang "$lang_name")")
-fi
+done
 
 # list project directories under $base that should be evaluated as one unit.
 # - if $base is a language container (direct child of lang/),
@@ -137,6 +184,7 @@ g_fail_loc=0
 g_constr_total=0
 g_constr_succ=0
 g_constr_fail=0
+evaluated_projects=()
 
 if [ ${#bases[@]} -eq 0 ]; then
     echo "no source projects found"
@@ -150,6 +198,16 @@ for i in "${!bases[@]}"; do
     mapfile -t projects < <(collect_projects "$base" "$ext")
 
     for proj in "${projects[@]}"; do
+        already_evaluated=0
+        for previous in "${evaluated_projects[@]}"; do
+            if [ "$previous" = "$proj" ]; then
+                already_evaluated=1
+                break
+            fi
+        done
+        [ "$already_evaluated" = "1" ] && continue
+        evaluated_projects+=("$proj")
+
         succ=0
         succ_loc=0
         fail=0
