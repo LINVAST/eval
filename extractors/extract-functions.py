@@ -166,18 +166,20 @@ def ensure_parser(cfg):
 
 
 def line_offsets(source):
+    """Return byte offsets of LF-delimited lines in the original source bytes."""
     offsets = [0]
-    idx = source.find("\n")
+    idx = source.find(b"\n")
     while idx != -1:
         offsets.append(idx + 1)
-        idx = source.find("\n", idx + 1)
+        idx = source.find(b"\n", idx + 1)
     return offsets
 
 
 def extract_text(source, offsets, sr, sc, er, ec):
+    """Slice Tree-sitter byte coordinates before decoding the captured text."""
     start = offsets[sr] + sc
     end = offsets[er] + ec
-    return source[start:end]
+    return source[start:end].decode("utf-8")
 
 
 def parse_query_output(output, source, cfg):
@@ -249,7 +251,9 @@ def main():
     cfg = LANGUAGES[lang]
 
     try:
-        source = open(path, encoding="utf-8").read()
+        # Match the bytes read by Tree-sitter, including original line endings.
+        with open(path, "rb") as source_file:
+            source = source_file.read()
     except OSError as e:
         sys.stderr.write("cannot read {}: {}\n".format(path, e))
         return 2

@@ -1,5 +1,5 @@
 *.err
 extractors/*.so
 extractors/tree-sitter-*/
-extractors/__pycache__/
+__pycache__/
 results/

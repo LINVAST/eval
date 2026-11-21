@@ -98,10 +98,11 @@ eval [path ...]           # initialize CLI and submodules for these paths, then 
              function_definition + struct/union/enum_specifier (c)
              function_declaration + class_declaration + object_declaration (kotlin)
              function_definition + class_definition (python)
-  └─ for each construct (bash + jq):
+  └─ evaluation.py checks extractor exit status and validates all JSONL before counting
+  └─ for each construct:
         write .wrapped (minimal valid program per language) to a temp file
         linvast ast <wrapper> -o /dev/null -c
-        tally pass/fail; failures logged as {file,name,startLine,endLine,type,result}
+        record acceptance, parser/builder rejection, unsupported language, or timeout
   └─ per-project summary + global TOTAL
 ```
 
@@ -119,9 +120,63 @@ Per-language wrappers are minimal and language-correct:
 #### Requirements
 
 - `tree-sitter` CLI (v0.26+)
-- `jq`
+- Python 3 and `fd` (source discovery)
 - `git` + network access on first run (the script initializes the `CLI` submodule and submodules for the requested language/project paths; the extractor also clones tree-sitter grammars into `extractors/tree-sitter-{java,go,lua,c,python}/` and `extractors/tree-sitter-kotlin/` and builds a native `<lang>.so` parser with `tree-sitter build`). Parsers are cached after the first build.
-- `dotnet` SDK (to build the `linvast` CLI, same as file-level mode)
+- .NET 10 SDK (to build the `linvast` CLI and local LINVAST projects)
+
+#### Outcome accounting
+
+Each run writes `results/evaluation-*/summary.json`, structured `events.jsonl`,
+and raw extractor/build/CLI diagnostics in `diagnostics.log`. The run summary also
+records resolved LINVAST versions and whether each dependency came from a local
+project or a package, including the project path. Per-project and
+global summaries count files discovered, deliberately excluded files, successfully
+extracted files, extraction failures, zero-match files, matched constructs,
+whole-file submissions, attempted units, parser rejections, builder rejections,
+unexpected builder errors, CLI errors/crashes,
+unsupported-language rejections, timeouts, accepted ASTs, and infrastructure
+failures separately. Events identify files, construct indices, names, line ranges,
+exit codes, and exclusion reasons where applicable.
+
+Discovery uses `fd`'s default visibility and ignore rules, then applies the existing
+path-substring exclusions (`tests`, `test`, `vendor`, `node_modules`). The discovered
+count covers files returned by `fd`; hidden or ignored files are outside that
+scope. All selected files are inventoried before evaluation, with overlapping
+targets deduplicated. A successful extractor with no matches increments
+`zero_match_files`. A failed extractor increments `extraction_failures`, discards
+all partial output, and aborts. Malformed extractor JSON is also a failure.
+
+The CLI's `ast` command returns these distinct exit codes:
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | AST built and serialized successfully |
+| 10 | Lexer/parser rejection from the LINVAST error listener or ANTLR recognition error |
+| 11 | Builder rejection: unsupported construct, unknown operator, or builder-originated syntax exception |
+| 12 | Unsupported language |
+| 13 | Unexpected LINVAST builder or serialization error |
+| 70 | Input/output or configuration failure |
+
+The runner enforces `FUN_TIMEOUT` (positive seconds; default 60), kills the timed-out
+process group, and records a timeout independently of CLI exit codes. Other unknown
+nonzero exits and crashes count as `cli_errors` and evaluation continues. Wrapped
+unexpected exceptions inside builder syntax exceptions count as `builder_errors`.
+Build failures abort before invoking any previously published CLI.
+
+Rejections, LINVAST errors, CLI crashes, and timeouts allow evaluation to continue.
+Setup, extraction, and I/O infrastructure failures
+produce a nonzero runner exit and `status: "aborted"` with partial counts; these
+are not completed benchmark results. On a completed run, attempted units equal
+accepted ASTs plus parser rejections, builder rejections, builder errors, CLI errors,
+unsupported-language rejections, and timeouts. `matched_constructs` counts successfully extracted units
+before evaluation; it can exceed attempts in an aborted run. Whole-file mode
+counts `whole_files_submitted` instead of matched constructs. Submodule setup
+failures abort in the shell before the evaluation run starts.
+
+The exit-code protocol requires the corresponding changes in the `CLI` submodule.
+Runner regression checks: `python3 -m unittest discover -s tests -p 'test_*.py'`.
+Set `EVAL_TEST_CLI` to the absolute path of a freshly built CLI executable to
+include the real CLI exit-code tests; otherwise those tests are skipped.
 
 #### Limitations
 
@@ -134,26 +189,32 @@ Per-language wrappers are minimal and language-correct:
 
 *Notes*:
 
-- The file-level LoC metric for failed files is misleading: the parser likely fails on few lines in the file, but the benchmark counts all of them as failed. Function-level mode addresses this by reporting pass/fail per construct.
-- Each evaluated project prints its own `summary:` line (e.g. `=> antlr4/... summary: constructs total=3623 succ=3623 fail=0`), and a single `=== TOTAL ===` aggregates everything.
+- Source captures use original UTF-8 byte offsets. The [UTF-8 extraction audit](reports/utf8-offset-audit.md) records the slicing fix and a six-repository before/after comparison: 1,653 sampled units, none changed. The full published corpus has not been re-audited.
+- Each evaluated project prints its own `summary:` line, and a single `=== TOTAL (complete/aborted) ===` reports the run status and aggregate counts. The published tables above predate this accounting and have not been recomputed.
 
 ## LINVAST dependency selection
 
-Builds use exactly **3.0.0** of each required LINVAST NuGet package by default,
-even when a neighboring source checkout exists. This applies to Debug and Release.
+Builds use the neighboring **local LINVAST source checkout by default** in both
+Debug and Release. For this repository layout, it is `../LINVAST` relative to
+the evaluation root. The projects currently declare version **3.0.0**.
 
-Opt into the neighboring `LINVAST` source checkout for development:
+Build explicitly against local source, or override the checkout location:
 
 ```sh
 dotnet build CLI/CLI/CLI.csproj -p:UseLocalLinvast=true
+dotnet build CLI/CLI/CLI.csproj -p:LinvastSourceRoot=/path/to/LINVAST
 ```
 
-Local mode requires all referenced projects at their existing relative paths and
-fails clearly if any are missing. It uses checkout changes directly without a
-package version pin. Use `-p:UseLocalLinvast=false` to explicitly select packages.
+Local mode requires both the core and imperative projects and fails clearly if
+either is missing. It uses checkout changes directly. There is no automatic
+fallback to packages. Use `-p:UseLocalLinvast=false` to explicitly select exactly
+version **3.0.0** of both NuGet packages. The obsolete comparer package is no longer
+used; the CLI uses the comparison helper from the current neighboring CLI source.
 
 Use the same property for `dotnet run` or `dotnet publish`. If restoring separately,
 pass the same selection to both restore and build/publish; restore again when
 switching dependency modes before using `--no-restore`.
 
-To use local source with the evaluation runner, use `UseLocalLinvast=true ./eval`.
+`./eval` uses local source by default. `UseLocalLinvast=false ./eval` explicitly
+selects packages. The runner places build artifacts under `results/build/`,
+including those from the referenced local projects.
