@@ -1,5 +1,9 @@
 *.err
 extractors/*.so
+extractors/*.parser.json
+extractors/.parser-cache.lock
+extractors/.parser-build-*/
+extractors/.build-cache/
 extractors/tree-sitter-*/
 __pycache__/
 results/

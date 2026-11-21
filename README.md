@@ -150,15 +150,58 @@ Whole-file mode does not apply declaration selection or construct deduplication.
 
 #### Requirements
 
-- `tree-sitter` CLI (v0.26+)
-- Python 3 and `fd` (source discovery)
-- `git` + network access on first run (the script initializes the `CLI` submodule and submodules for the requested language/project paths; the extractor also clones tree-sitter grammars into `extractors/tree-sitter-{java,go,lua,c,python}/` and `extractors/tree-sitter-kotlin/` and builds a native `<lang>.so` parser with `tree-sitter build`). Parsers are cached after the first build.
+- `tree-sitter` CLI (v0.26+); each run records its version and executable hash.
+- Python 3 and `fd` (source discovery).
+- Git and network access for missing submodules or pinned grammar commits. The
+  extractor fetches the exact commits in [grammars.lock.json](extractors/grammars.lock.json),
+  then checks them out detached in `extractors/tree-sitter-*/`. An initialized,
+  cached checkout does not need network access to prepare its parsers.
+- A native C/C++ compiler and linker toolchain, exposed as `cc`/`c++` or through
+  `CC`/`CXX` executable paths. Pinned grammars include generated parser sources;
+  `tree-sitter build` compiles their native libraries.
 - .NET 10 SDK (to build the `linvast` CLI and local LINVAST projects)
+
+Python handles JSON and process timeouts; `jq` and a standalone `timeout` command
+are not required. Tool versions are recorded rather than automatically installed.
+
+Grammar revisions are pinned independently of the Tree-sitter executable.
+Cached `<language>.so` files require matching `<language>.parser.json` metadata:
+the pinned grammar commit and build-input hashes, Tree-sitter and C/C++ compiler
+versions/executable hashes, platform, build flags, and library hash. Missing or
+mismatched metadata, changed tools/flags, or a corrupted library causes a rebuild.
+Local edits to a grammar checkout cause an error rather than being overwritten.
+Change the lock file deliberately to upgrade a grammar. Tree-sitter's build cache
+is contained in `extractors/.build-cache/`.
+
+Parsers are prepared once per evaluation and copied as metadata into `parsers.json`.
+Every extraction checks the native library against that run's recorded hash;
+replacing a parser mid-run aborts extraction. To prepare or inspect one parser:
+
+```sh
+python3 extractors/extract-functions.py --parser-info python
+```
 
 #### Outcome accounting
 
 Each run writes `results/evaluation-*/summary.json`, structured `events.jsonl`,
-and raw extractor/build/CLI diagnostics in `diagnostics.log`. The run summary also
+and raw extractor/build/CLI diagnostics in `diagnostics.log`. Each run also writes:
+
+- `files.jsonl`: every discovered source file's project, relative path, language,
+  SHA-256, byte size, retained/excluded status, and exclusion reason. Retained
+  means selected for processing; events distinguish files actually processed
+  before an aborted run. Source hashes are checked before and after processing.
+- `environment.json`: exact Python, `fd`, Git, Tree-sitter, C/C++ compiler and .NET
+  versions and executable hashes, OS/platform, build settings, extractor/lock
+  hashes, and CLI binary hash. Evaluation, CLI, and local LINVAST source identities
+  include Git commits, dirty state, diff hashes, and hashes of changed/untracked
+  files. Missing tools are recorded and fail when required by a build or extraction.
+- `parsers.json`: the grammar commits, build-input hashes, build tool identities,
+  and native parser hashes actually selected for this run.
+
+The summary records project Git identities and hashes of these three artifacts.
+These files are the publishable run manifest and provenance; `results/` remains
+Git-ignored, so include the relevant run directory when sharing results.
+The run summary also
 records resolved LINVAST versions and whether each dependency came from a local
 project or a package, including the project path. Per-project and
 global summaries count files discovered, deliberately excluded files, successfully
@@ -172,10 +215,15 @@ exit codes, and exclusion reasons where applicable.
 
 Project discovery uses the language projects registered in `.gitmodules`;
 unregistered directories left on disk are not evaluated. File discovery uses
-`fd`'s default visibility and ignore rules, then applies the existing
-path-substring exclusions (`tests`, `test`, `vendor`, `node_modules`). The discovered
-count covers files returned by `fd`; hidden or ignored files are outside that
-scope. All selected files are inventoried before evaluation, with overlapping
+explicit `fd --type f --hidden --no-ignore --no-follow --case-sensitive --exclude .git`
+options and the selected language extension. Hidden and ignored source files are
+included, symlinks are not followed, and Git metadata directories are not traversed.
+Paths are sorted. Only exact, case-sensitive **directory components** named
+`tests`, `test`, `vendor`, or `node_modules` are excluded, even when selecting a
+subdirectory within one. Names such as `_pytest`, `testing`, `latest.py`, and
+`test_example.py` do not trigger exclusion on their own. No test-filename rule is
+applied. All discovered candidates, including directory-excluded files, appear in
+the manifest with content hashes. All selected files are inventoried before evaluation, with overlapping
 targets deduplicated. A successful extractor with no matches increments
 `zero_match_files`. A failed extractor increments `extraction_failures`, discards
 all partial output, and aborts. Malformed extractor JSON is also a failure.

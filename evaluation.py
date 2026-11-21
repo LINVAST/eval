@@ -8,15 +8,20 @@ import json
 import math
 import os
 from pathlib import Path
+import platform
 import signal
 import subprocess
 import sys
 import tempfile
 
+from provenance import file_sha256, repository_identity, tool_identity
+
 
 LANGUAGES = {'c': 'c', 'go': 'go', 'java': 'java', 'kotlin': 'kt',
              'lua': 'lua', 'python': 'py'}
 EXCLUSIONS = ('tests', 'test', 'vendor', 'node_modules')
+DISCOVERY_FLAGS = ['--type', 'f', '--hidden', '--no-ignore', '--no-follow',
+                   '--case-sensitive', '--exclude', '.git', '-0']
 OUTCOMES = {0: 'accepted_asts', 10: 'parser_rejections',
             11: 'builder_rejections', 12: 'unsupported_language_rejections',
             13: 'builder_errors'}
@@ -48,6 +53,58 @@ class Evaluation:
         self.context = {}
         self.dependencies = {}
         self.seen_constructs = {}
+        self.file_hashes = {}
+        self.project_sources = {}
+        self.environment = {}
+        self.parsers = {}
+        (self.output / 'environment.json').write_text('{}\n')
+        (self.output / 'parsers.json').write_text('{}\n')
+
+    def record_environment(self):
+        tools = {'python': {'path': sys.executable, 'version': sys.version,
+                            'sha256': file_sha256(sys.executable)}}
+        for name, command in (('fd', 'fd'), ('git', 'git'), ('dotnet', 'dotnet'),
+                              ('tree_sitter', os.environ.get('TREE_SITTER', 'tree-sitter')),
+                              ('cc', os.environ.get('CC', 'cc')), ('cxx', os.environ.get('CXX', 'c++'))):
+            try:
+                tools[name] = tool_identity(command)
+            except (OSError, subprocess.CalledProcessError) as error:
+                tools[name] = {'unavailable': str(error)}
+        self.environment = {
+            'tools': tools, 'platform': platform.platform(),
+            'sources': {'evaluation': repository_identity(self.root),
+                        'cli': repository_identity(self.root / 'CLI')},
+            'extractor_sha256': file_sha256(self.extractor),
+            'extraction_files': {str(path.relative_to(self.root)): file_sha256(path)
+                                 for path in (self.extractor, self.root / 'extractors/parser_cache.py',
+                                              self.root / 'extractors/grammars.lock.json', self.root / 'provenance.py')
+                                 if path.is_file() and self.root in path.parents},
+            'build_settings': {key: os.environ.get(key) for key in
+                               ('UseLocalLinvast', 'LinvastSourceRoot')},
+        }
+        self.write_environment()
+
+    def write_environment(self):
+        (self.output / 'environment.json').write_text(json.dumps(self.environment, indent=2) + '\n')
+
+    def prepare_parsers(self, plan):
+        if self.whole_files:
+            return
+        environment = dict(os.environ)
+        environment.pop('LINVAST_PARSER_MANIFEST', None)
+        for lang in sorted({lang for _, lang, _, files in plan if files and lang in LANGUAGES}):
+            result = subprocess.run([sys.executable, str(self.extractor), '--parser-info', lang],
+                                    capture_output=True, env=environment)
+            with (self.output / 'diagnostics.log').open('ab') as diagnostics:
+                diagnostics.write(result.stderr)
+            if result.returncode:
+                self.fail('parser_setup', f'cannot prepare {lang}', exit_code=result.returncode)
+            self.parsers[lang] = json.loads(result.stdout)
+        (self.output / 'parsers.json').write_text(json.dumps(self.parsers, indent=2) + '\n')
+
+    def verify_source(self, path):
+        if file_sha256(path) != self.file_hashes[path]:
+            self.fail('input', 'source changed after file manifest was written')
 
     def unique_construct(self, lang, unit, index):
         digest = hashlib.sha256(unit['wrapped'].encode('utf-8')).hexdigest()
@@ -82,6 +139,7 @@ class Evaluation:
         raise InfrastructureError(f'{stage}: {reason}')
 
     def inventory(self, targets):
+        (self.output / 'files.jsonl').write_text('')
         registered = None
         modules = self.root / '.gitmodules'
         if modules.is_file():
@@ -114,11 +172,12 @@ class Evaluation:
             self.project = str(relative)
             self.context = {'project': self.project}
             self.projects[self.project] = dict.fromkeys(COUNTERS, 0)
+            self.project_sources[self.project] = repository_identity(project)
             lang = relative.parts[1]
             extension = LANGUAGES.get(lang, lang)
             try:
                 found = subprocess.run(
-                    ['fd', '--type', 'f', '-0', '-e', extension], cwd=project,
+                    ['fd', *DISCOVERY_FLAGS, '-e', extension], cwd=project,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True,
                 )
             except (OSError, subprocess.CalledProcessError) as error:
@@ -132,12 +191,23 @@ class Evaluation:
                     continue
                 seen.add(path)
                 name = str(path.relative_to(project))
+                digest = file_sha256(path)
+                self.file_hashes[path] = digest
                 self.count('files_discovered')
                 self.event('file_discovered', file=name)
-                exclusion = next((part for part in EXCLUSIONS if part in name), None)
+                corpus_root = self.root.joinpath(*relative.parts[:3])
+                directories = path.relative_to(corpus_root).parts[:-1]
+                exclusion = next((part for part in EXCLUSIONS if part in directories), None)
+                reason = f'directory component is {exclusion}' if exclusion else None
+                with (self.output / 'files.jsonl').open('a', encoding='utf-8') as manifest:
+                    manifest.write(json.dumps({'project': self.project, 'file': name,
+                                               'path': str(path.relative_to(self.root)), 'language': lang,
+                                               'sha256': digest, 'size_bytes': path.stat().st_size,
+                                               'status': 'excluded' if exclusion else 'retained',
+                                               'reason': reason}) + '\n')
                 if exclusion:
                     self.count('files_excluded')
-                    self.event('file_excluded', file=name, reason=f'path contains {exclusion}')
+                    self.event('file_excluded', file=name, reason=reason)
                 else:
                     files.append(path)
             plan.append((project, lang, extension, files))
@@ -148,9 +218,12 @@ class Evaluation:
     def extract(self, lang, path):
         try:
             self.event('extraction_started')
+            environment = dict(os.environ)
+            if self.parsers:
+                environment['LINVAST_PARSER_MANIFEST'] = str((self.output / 'parsers.json').resolve())
             result = subprocess.run(
                 [sys.executable, str(self.extractor), lang, str(path)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=environment,
             )
             with (self.output / 'diagnostics.log').open('ab') as diagnostics:
                 diagnostics.write((json.dumps(self.context) + '\n').encode())
@@ -232,6 +305,10 @@ class Evaluation:
                 if library['type'] == 'project' and path:
                     path = str((self.root / 'CLI/CLI' / path).resolve())
                 self.dependencies[name] = {'type': library['type'], 'path': path}
+                if library['type'] == 'project' and path:
+                    self.environment.setdefault('sources', {})[name] = repository_identity(Path(path).parent)
+        self.environment['cli_sha256'] = file_sha256(self.cli)
+        self.write_environment()
         self.event('build_complete', dependencies=self.dependencies)
 
     def run(self, targets, build=True):
@@ -239,20 +316,26 @@ class Evaluation:
         try:
             if not math.isfinite(self.timeout) or self.timeout <= 0:
                 self.fail('configuration', 'FUN_TIMEOUT must be a positive number of seconds')
+            if build:
+                self.record_environment()
             plan = self.inventory(targets)
             if build:
                 self.build()
+                self.prepare_parsers(plan)
             with tempfile.TemporaryDirectory(prefix='linvast-wrapper.') as directory:
                 for project, lang, extension, files in plan:
                     self.project = str(project.relative_to(self.root))
                     print(f'--- {self.project} ({extension}) ---', flush=True)
                     for path in files:
                         self.context = {'project': self.project, 'file': str(path.relative_to(project))}
+                        self.verify_source(path)
                         if self.whole_files or lang not in LANGUAGES:
                             self.count('whole_files_submitted')
                             self.evaluate_unit(path, mode='whole_file')
+                            self.verify_source(path)
                             continue
                         units = self.extract(lang, path)
+                        self.verify_source(path)
                         print(f'  [{self.context["file"]}] matched constructs: {len(units)}', flush=True)
                         for index, unit in enumerate(units):
                             if not self.unique_construct(lang, unit, index):
@@ -273,8 +356,15 @@ class Evaluation:
             print(f'Evaluation aborted: {error}', file=sys.stderr)
         finally:
             summary = {'status': status, 'dependencies': self.dependencies,
+                       'project_sources': self.project_sources,
+                       'artifacts': {'files': 'files.jsonl', 'environment': 'environment.json',
+                                     'parsers': 'parsers.json'},
+                       'artifact_sha256': {name: file_sha256(self.output / name)
+                                           for name in ('files.jsonl', 'environment.json', 'parsers.json')
+                                           if (self.output / name).is_file()},
                        'selection': {'declarations': 'whole_file' if self.whole_files else 'all declarations with extracted children removed',
-                                     'deduplication': 'none' if self.whole_files else 'language and exact wrapped UTF-8 input'},
+                                     'deduplication': 'none' if self.whole_files else 'language and exact wrapped UTF-8 input',
+                                     'discovery_flags': DISCOVERY_FLAGS, 'excluded_directories': EXCLUSIONS},
                        'totals': self.total, 'projects': self.projects}
             (self.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
             self.context = {}

@@ -8,6 +8,7 @@ Emits one JSON object per selected declaration on stdout (JSON Lines):
 Usage:
     extract-functions.py <lang> <file>
     extract-functions.py --langs        # list supported languages
+    extract-functions.py --parser-info <lang>  # prepare and identify a pinned parser
 
 Supported languages: c, go, java, lua, python, kotlin
 """
@@ -18,13 +19,16 @@ import re
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from extractors import parser_cache
 
 SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 TS_BIN = os.environ.get("TREE_SITTER", "tree-sitter")
 
 LANGUAGES = {
     "java": {
-        "grammar_url": "https://github.com/tree-sitter/tree-sitter-java",
         "grammar_dir": "tree-sitter-java",
         "lang": "java",
         "kinds": ["constructor", "method", "class", "interface", "enum",
@@ -55,7 +59,6 @@ LANGUAGES = {
         },
     },
     "go": {
-        "grammar_url": "https://github.com/tree-sitter/tree-sitter-go",
         "grammar_dir": "tree-sitter-go",
         "lang": "go",
         "kinds": ["function", "method", "type"],
@@ -73,7 +76,6 @@ LANGUAGES = {
         "wrappers": {"default": "package main\n{code}\n"},
     },
     "lua": {
-        "grammar_url": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
         "grammar_dir": "tree-sitter-lua",
         "lang": "lua",
         "kinds": ["function"],
@@ -84,7 +86,6 @@ LANGUAGES = {
         "wrappers": {"default": "{code}\n"},
     },
     "c": {
-        "grammar_url": "https://github.com/tree-sitter/tree-sitter-c",
         "grammar_dir": "tree-sitter-c",
         "lang": "c",
         "kinds": ["function", "struct", "union", "enum"],
@@ -107,7 +108,6 @@ LANGUAGES = {
         },
     },
     "python": {
-        "grammar_url": "https://github.com/tree-sitter/tree-sitter-python",
         "grammar_dir": "tree-sitter-python",
         "lang": "python",
         "kinds": ["function", "class", "function", "class"],
@@ -127,7 +127,6 @@ LANGUAGES = {
         "wrappers": {"default": "{code}\n"},
     },
     "kotlin": {
-        "grammar_url": "https://github.com/fwcd/tree-sitter-kotlin",
         "grammar_dir": "tree-sitter-kotlin",
         "lang": "kotlin",
         "kinds": ["function", "class", "object"],
@@ -154,21 +153,7 @@ PATTERN_RE = re.compile(r"pattern:\s*(\d+)")
 
 
 def ensure_parser(cfg):
-    lib = os.path.join(SELF_DIR, cfg["lang"] + ".so")
-    if os.path.isfile(lib):
-        return lib
-    grammar = os.path.join(SELF_DIR, cfg["grammar_dir"])
-    if not os.path.isdir(grammar):
-        subprocess.run(
-            ["git", "clone", "--depth", "1", cfg["grammar_url"], grammar],
-            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        )
-    subprocess.run(
-        [TS_BIN, "build", "-o", lib],
-        cwd=grammar, check=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-    return lib
+    return parser_cache.ensure_parser(cfg, SELF_DIR, TS_BIN)
 
 
 def line_offsets(source):
@@ -307,6 +292,11 @@ def main():
     if args[0] == "--langs":
         print("\n".join(sorted(LANGUAGES)))
         return 0
+    if args[0] == '--parser-info' and len(args) == 2:
+        cfg = LANGUAGES[args[1]]
+        ensure_parser(cfg)
+        print((Path(SELF_DIR) / (cfg['lang'] + '.parser.json')).read_text())
+        return 0
     if len(args) != 2:
         sys.stderr.write("usage: {} <lang> <file>\n".format(sys.argv[0]))
         return 2
@@ -349,4 +339,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except subprocess.CalledProcessError as error:
+        if error.stderr:
+            sys.stderr.write(error.stderr.decode(errors='replace') if isinstance(error.stderr, bytes) else error.stderr)
+        sys.stderr.write(f'Extractor dependency failed: {error.cmd}\n')
+        sys.exit(1)

@@ -41,9 +41,8 @@ class CliOutcomeTests(unittest.TestCase):
     def test_void_parameter_is_supported_by_local_builder(self):
         self.run_cli('input.c', 'static double pi(void) { return 3.14159; }', 0)
 
-    def test_unexpected_library_exception_has_nonfatal_error_code(self):
-        result = self.run_cli('input.c', 'long f() { return 2147483648; }', 13)
-        self.assertIn('OverflowException', result.stdout + result.stderr)
+    def test_integer_beyond_int32_is_supported(self):
+        self.run_cli('input.c', 'long f() { return 2147483648; }', 0)
 
     def test_comparison_uses_current_source_helper(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -139,6 +140,45 @@ esac
         self.assertEqual(counts['units_attempted'], 0)
         self.assertTrue(any(event.get('exit_code') == 2 for event in events))
         self.assertIn('query/build/decode failure', (self.output / 'diagnostics.log').read_text())
+
+    def test_directory_filters_manifest_and_explicit_discovery(self):
+        retained = ['src/_pytest/config.c', 'src/latest.c', 'test_file.c',
+                    '.hidden/a.c', 'ignored/a.c', 'testing/a.c', 'vendorish/a.c']
+        excluded = ['test/a.c', 'tests/a.c', 'vendor/a.c', 'node_modules/a.c']
+        for path in retained + excluded + ['.git/metadata.c']:
+            self.source(path, self.unit())
+        (self.project / '.ignore').write_text('ignored/\n')
+        (self.project / '.fdignore').write_text('src/\n')
+        code, summary, _ = self.run_evaluation()
+        self.assertEqual(code, 0)
+        records = [json.loads(line) for line in (self.output / 'files.jsonl').read_text().splitlines()]
+        self.assertEqual({r['file'] for r in records if r['status'] == 'retained'}, set(retained))
+        self.assertEqual({r['file'] for r in records if r['status'] == 'excluded'}, set(excluded))
+        self.assertEqual(summary['totals']['files_discovered'], len(retained + excluded))
+        self.assertEqual(summary['totals']['files_excluded'], len(excluded))
+        for record in records:
+            self.assertEqual(record['sha256'], hashlib.sha256(self.unit().encode()).hexdigest())
+            self.assertEqual(bool(record['reason']), record['status'] == 'excluded')
+
+    def test_selecting_excluded_subdirectory_does_not_bypass_filter(self):
+        self.source('tests/a.c', self.unit())
+        code, summary, _ = self.run_evaluation(['lang/c/sample/tests'])
+        self.assertEqual(code, 0)
+        self.assertEqual(summary['totals']['files_excluded'], 1)
+        self.assertEqual(summary['totals']['units_attempted'], 0)
+
+    def test_input_change_after_manifest_aborts(self):
+        self.source('a.c', self.unit())
+        original = evaluation.Evaluation.extract
+        def extract(runner, lang, path):
+            units = original(runner, lang, path)
+            path.write_text('changed')
+            return units
+        with patch.object(evaluation.Evaluation, 'extract', extract):
+            code, summary, _ = self.run_evaluation()
+        self.assertEqual(code, 1)
+        self.assertEqual(summary['totals']['infrastructure_failures'], 1)
+        self.assertEqual(summary['totals']['units_attempted'], 0)
 
     def test_malformed_or_incomplete_json_aborts_before_any_unit(self):
         for invalid in ('{', '{}', 'null', '{"wrapped": "x"}', '\ufffd'):

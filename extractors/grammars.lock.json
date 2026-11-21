@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "grammars": {
+    "c": {
+      "url": "https://github.com/tree-sitter/tree-sitter-c",
+      "revision": "b780e47fc780ddc8da13afa35a3f4ed5c157823d"
+    },
+    "go": {
+      "url": "https://github.com/tree-sitter/tree-sitter-go",
+      "revision": "2346a3ab1bb3857b48b29d779a1ef9799a248cd7"
+    },
+    "java": {
+      "url": "https://github.com/tree-sitter/tree-sitter-java",
+      "revision": "e10607b45ff745f5f876bfa3e94fbcc6b44bdc11"
+    },
+    "kotlin": {
+      "url": "https://github.com/fwcd/tree-sitter-kotlin",
+      "revision": "d6af96d2e23ef0a8ff5ab512864378cf08fba311"
+    },
+    "lua": {
+      "url": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
+      "revision": "10fe0054734eec83049514ea2e718b2a56acd0c9"
+    },
+    "python": {
+      "url": "https://github.com/tree-sitter/tree-sitter-python",
+      "revision": "26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64"
+    }
+  }
+}
