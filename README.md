@@ -136,3 +136,24 @@ Per-language wrappers are minimal and language-correct:
 
 - The file-level LoC metric for failed files is misleading: the parser likely fails on few lines in the file, but the benchmark counts all of them as failed. Function-level mode addresses this by reporting pass/fail per construct.
 - Each evaluated project prints its own `summary:` line (e.g. `=> antlr4/... summary: constructs total=3623 succ=3623 fail=0`), and a single `=== TOTAL ===` aggregates everything.
+
+## LINVAST dependency selection
+
+Builds use exactly **3.0.0** of each required LINVAST NuGet package by default,
+even when a neighboring source checkout exists. This applies to Debug and Release.
+
+Opt into the neighboring `LINVAST` source checkout for development:
+
+```sh
+dotnet build CLI/CLI/CLI.csproj -p:UseLocalLinvast=true
+```
+
+Local mode requires all referenced projects at their existing relative paths and
+fails clearly if any are missing. It uses checkout changes directly without a
+package version pin. Use `-p:UseLocalLinvast=false` to explicitly select packages.
+
+Use the same property for `dotnet run` or `dotnet publish`. If restoring separately,
+pass the same selection to both restore and build/publish; restore again when
+switching dependency modes before using `--no-restore`.
+
+To use local source with the evaluation runner, use `UseLocalLinvast=true ./eval`.
