@@ -11,9 +11,14 @@ cd eval
 ./eval                            # all languages and their submodules
 ```
 
-You do not need to clone with `--recurse-submodules`; `eval` fetches the required submodules on demand. Running it without paths selects every language, so it downloads all language submodules. Function-level mode is the default.
+You do not need to clone with `--recurse-submodules`; `eval` fetches the required submodules on demand. Running it without paths selects every configured language project, so it downloads all configured language submodules. Declaration mode is the default. The corpus retains JDK11; JDK has been removed.
 
 Each submodule must be recorded in the parent repository as a gitlink as well as listed in `.gitmodules`. If `eval` reports a requested submodule is not recorded, commit and push that submodule entry in the parent repository before running `eval` from a fresh clone.
+
+The tables below are historical results from before child-declaration removal and
+input deduplication. The JDK row has been removed and the Java subtotal recomputed
+from the remaining historical rows. Current corpus totals and language proportions
+require a fresh evaluation; these tables do not measure the new selection policy.
 
 #### C
 
@@ -47,9 +52,8 @@ Each submodule must be recorded in the parent repository as a gitlink as well as
 | antlr4 | 3623 | 3623 | 0 | 100.0% |
 | graal | 140313 | 136112 | 4201 | 97.0% |
 | javapoet | 454 | 449 | 5 | 98.9% |
-| jdk | 232379 | 224046 | 8333 | 96.4% |
 | jdk11 | 253978 | 250807 | 3171 | 98.8% |
-| **Total** | **630747** | **615037** | **15710** | **97.5%** |
+| **Total** | **398368** | **390991** | **7377** | **98.1%** |
 
 #### Kotlin
 
@@ -98,7 +102,9 @@ eval [path ...]           # initialize CLI and submodules for these paths, then 
              function_definition + struct/union/enum_specifier (c)
              function_declaration + class_declaration + object_declaration (kotlin)
              function_definition + class_definition (python)
+        └─ emit each declaration once; remove extracted children from its body
   └─ evaluation.py checks extractor exit status and validates all JSONL before counting
+  └─ skip repeated identical wrapped inputs within each language across the run
   └─ for each construct:
         write .wrapped (minimal valid program per language) to a temp file
         linvast ast <wrapper> -o /dev/null -c
@@ -117,6 +123,31 @@ Per-language wrappers are minimal and language-correct:
 | lua  | `<construct>` (no wrapper needed) |
 | python | `<construct>` (no wrapper needed) |
 
+Every captured declaration is emitted, including nested functions, methods,
+constructors, and classes. Each unit has its directly contained extracted
+declarations removed. For example, if `A` contains a field, method `f`, and class
+`B`, the units are `A` with just its field, `f`, and `B`. If `B` contains `g`,
+`B` is emitted without `g`, and `g` is emitted separately. Functions also have
+their extracted nested declarations removed. Repeated query captures of exactly
+the same range are emitted once (for example, a grouped Go type declaration).
+Adjacent declarations on the same line remain separate.
+
+Removed text is replaced with spaces while retaining original line endings and
+byte positions. Line metadata refers to the original declaration range. Python
+uses `pass` at removed declaration sites to keep suites valid, and removes
+attached decorators from the enclosing unit. Extracted Python definitions retain
+the existing behavior of omitting their own decorators. For an inline C type
+definition used by a field, the parent retains the type reference and field
+declarator, but the nested type body is removed and evaluated separately.
+
+The runner then deduplicates exact wrapped UTF-8 inputs within each language for
+the entire run, including across projects, using SHA-256. The first occurrence
+is evaluated; subsequent copies produce `duplicate_construct` events pointing
+to that occurrence and do not enter the evaluation denominator. Whitespace and
+comments outside the removed declarations are preserved, so this does not identify
+semantic or approximate clones. Deduplication uses the resulting stripped units.
+Whole-file mode does not apply declaration selection or construct deduplication.
+
 #### Requirements
 
 - `tree-sitter` CLI (v0.26+)
@@ -132,13 +163,16 @@ records resolved LINVAST versions and whether each dependency came from a local
 project or a package, including the project path. Per-project and
 global summaries count files discovered, deliberately excluded files, successfully
 extracted files, extraction failures, zero-match files, matched constructs,
+unique constructs, duplicate constructs,
 whole-file submissions, attempted units, parser rejections, builder rejections,
 unexpected builder errors, CLI errors/crashes,
 unsupported-language rejections, timeouts, accepted ASTs, and infrastructure
 failures separately. Events identify files, construct indices, names, line ranges,
 exit codes, and exclusion reasons where applicable.
 
-Discovery uses `fd`'s default visibility and ignore rules, then applies the existing
+Project discovery uses the language projects registered in `.gitmodules`;
+unregistered directories left on disk are not evaluated. File discovery uses
+`fd`'s default visibility and ignore rules, then applies the existing
 path-substring exclusions (`tests`, `test`, `vendor`, `node_modules`). The discovered
 count covers files returned by `fd`; hidden or ignored files are outside that
 scope. All selected files are inventoried before evaluation, with overlapping
@@ -168,8 +202,11 @@ Setup, extraction, and I/O infrastructure failures
 produce a nonzero runner exit and `status: "aborted"` with partial counts; these
 are not completed benchmark results. On a completed run, attempted units equal
 accepted ASTs plus parser rejections, builder rejections, builder errors, CLI errors,
-unsupported-language rejections, and timeouts. `matched_constructs` counts successfully extracted units
-before evaluation; it can exceed attempts in an aborted run. Whole-file mode
+unsupported-language rejections, and timeouts. `matched_constructs` counts the
+declaration units emitted by successful extraction. On a completed run it
+equals `unique_constructs + duplicate_constructs`; attempts equal unique
+constructs plus whole-file submissions. An aborted run can have matched units
+that were not yet deduplicated or attempted. Whole-file mode
 counts `whole_files_submitted` instead of matched constructs. Submodule setup
 failures abort in the shell before the evaluation run starts.
 
@@ -180,17 +217,17 @@ include the real CLI exit-code tests; otherwise those tests are skipped.
 
 #### Limitations
 
-- Extracts named function, method, and type declarations at any scoping depth. Those whose body depends on enclosing-class/package context (e.g. `Outer.this` references, Go types declared in other files, Python methods referencing module-level imports) fail the wrapper parse and are reported as failures — this is intended (it surfaces exactly which construct is problematic).
+- Extracts named function, method, and type declarations at all scoping depths. Each unit retains its own members and statements, with extracted children removed. References to removed declarations or to file context such as imports can affect evaluation.
 - Lua/anonymous function expressions (e.g. `local f = function() … end`) are not captured; only named `function_declaration`s are.
 - Kotlin top-level functions, classes, and objects are extracted without a wrapper context; constructs that reference other top-level Kotlin declarations may fail if those are omitted from the extracted code.
 - Python top-level functions and classes are extracted without their file context; constructs that depend on module-level imports or globals will fail the wrapper parse.
 - C functions frequently reference file-scope globals, types, and macros defined in sibling headers (e.g. `CJSON_PUBLIC`, `global_error`, struct tags). The minimal `<construct>` wrapper does not include these, so such functions fail the wrapper parse even though the whole file parses at file-level. This is a known C trade-off, not a bug.
-- One `linvast ast` CLI invocation is spawned per construct. This is correct but slow for very large repositories (e.g. `go/task`, ~6.5 MB / 904 constructs); prefer a smaller project or package for exploratory runs.
+- One `linvast ast` CLI invocation is spawned per unique construct. Large repositories can be slow; prefer a smaller project or package for exploratory runs.
 
 *Notes*:
 
 - Source captures use original UTF-8 byte offsets. The [UTF-8 extraction audit](reports/utf8-offset-audit.md) records the slicing fix and a six-repository before/after comparison: 1,653 sampled units, none changed. The full published corpus has not been re-audited.
-- Each evaluated project prints its own `summary:` line, and a single `=== TOTAL (complete/aborted) ===` reports the run status and aggregate counts. The published tables above predate this accounting and have not been recomputed.
+- Each evaluated project prints its own `summary:` line, and a single `=== TOTAL (complete/aborted) ===` reports the run status and aggregate counts. The historical tables above predate this accounting and selection policy.
 
 ## LINVAST dependency selection
 

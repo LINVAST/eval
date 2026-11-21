@@ -88,11 +88,6 @@
 	url = https://github.com/square/javapoet
 	shallow = true
 
-[submodule "lang/java/jdk"]
-	path = lang/java/jdk
-	url = https://github.com/openjdk/jdk
-	shallow = true
-
 [submodule "lang/java/jdk11"]
 	path = lang/java/jdk11
 	url = https://github.com/openjdk/jdk11u

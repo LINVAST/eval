@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Extract functions/methods from a source file using tree-sitter.
+"""Extract declarations separately, removing extracted children from parents.
 
-Emits one JSON object per function on stdout (JSON Lines):
+Emits one JSON object per selected declaration on stdout (JSON Lines):
 
-    {"name":"foo","kind":"method","startLine":2,"endLine":5,"code":"..."}
+    {"name":"foo","type":"class","startLine":2,"endLine":5,"code":"..."}
 
 Usage:
     extract-functions.py <lang> <file>
@@ -93,11 +93,11 @@ LANGUAGES = {
             "  declarator: (function_declarator\n"
             "    declarator: (identifier) @name)) @fn\n"
             "\n"
-            "(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @fn\n"
+            "(struct_specifier name: (type_identifier) @name body: (field_declaration_list) @body) @fn\n"
             "\n"
-            "(union_specifier name: (type_identifier) @name body: (field_declaration_list)) @fn\n"
+            "(union_specifier name: (type_identifier) @name body: (field_declaration_list) @body) @fn\n"
             "\n"
-            "(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @fn"
+            "(enum_specifier name: (type_identifier) @name body: (enumerator_list) @body) @fn"
         ),
         "wrappers": {
             "default": "{code}\n",
@@ -110,13 +110,19 @@ LANGUAGES = {
         "grammar_url": "https://github.com/tree-sitter/tree-sitter-python",
         "grammar_dir": "tree-sitter-python",
         "lang": "python",
-        "kinds": ["function", "class"],
+        "kinds": ["function", "class", "function", "class"],
         "query": (
             "(function_definition\n"
             "  name: (identifier) @name) @fn\n"
             "\n"
             "(class_definition\n"
-            "  name: (identifier) @name) @fn"
+            "  name: (identifier) @name) @fn\n"
+            "\n"
+            "(decorated_definition\n"
+            "  definition: (function_definition name: (identifier) @name) @fn) @remove\n"
+            "\n"
+            "(decorated_definition\n"
+            "  definition: (class_definition name: (identifier) @name) @fn) @remove"
         ),
         "wrappers": {"default": "{code}\n"},
     },
@@ -184,7 +190,7 @@ def extract_text(source, offsets, sr, sc, er, ec):
 
 def parse_query_output(output, source, cfg):
     offsets = line_offsets(source)
-    functions = []
+    matches = []
     cur = {}
     for line in output.splitlines():
         stripped = line.strip()
@@ -193,7 +199,7 @@ def parse_query_output(output, source, cfg):
         pm = PATTERN_RE.search(stripped)
         if pm:
             if cur.get("fn_pos"):
-                functions.append(_materialize(cur, source, offsets, cfg))
+                matches.append(cur)
             cur = {"pat": int(pm.group(1))}
             continue
         m = CAPTURE_RE.search(line)
@@ -205,14 +211,75 @@ def parse_query_output(output, source, cfg):
             cur["name_pos"] = (sr, sc, er, ec)
         elif cap == "fn":
             cur["fn_pos"] = (sr, sc, er, ec)
+        elif cap in ("remove", "body"):
+            cur[cap + "_pos"] = (sr, sc, er, ec)
     if cur.get("fn_pos"):
-        functions.append(_materialize(cur, source, offsets, cfg))
-    return functions
+        matches.append(cur)
+    return [_materialize(match, source, offsets, cfg)
+            for match in declaration_matches(matches)]
+
+
+def declaration_matches(matches):
+    """Keep each range once and attach directly contained declarations.
+
+    Compare byte-column points, not line numbers: sibling declarations may share
+    a line. For repeated captures of one range (e.g. a grouped Go type declaration),
+    use the first name in source order. Prefer a decorated capture's wider removal
+    range so decorators are removed with the declaration from its parent.
+    """
+    def order(match):
+        sr, sc, er, ec = match['fn_pos']
+        rsr, rsc, rer, rec = match.get('remove_pos', match['fn_pos'])
+        return sr, sc, -er, -ec, rsr, rsc, -rer, -rec, match.get('name_pos', ()), match.get('pat', 0)
+
+    selected = []
+    seen = set()
+    parents = []
+    for match in sorted(matches, key=order):
+        sr, sc, er, ec = match['fn_pos']
+        start, end = (sr, sc), (er, ec)
+        if end <= start:
+            raise ValueError('empty or reversed declaration range')
+        if match['fn_pos'] in seen:
+            continue
+        seen.add(match['fn_pos'])
+        match = {**match, 'children': []}
+        while parents and start >= parents[-1]['fn_pos'][2:]:
+            parents.pop()
+        if parents:
+            parent = parents[-1]
+            if end > parent['fn_pos'][2:]:
+                raise ValueError('declaration ranges overlap without containment')
+            remove = match.get('remove_pos', match['fn_pos'])
+            if remove[:2] < parent['fn_pos'][:2] or remove[2:] > parent['fn_pos'][2:]:
+                raise ValueError('child removal range extends outside its parent')
+            parent['children'].append(match)
+        selected.append(match)
+        parents.append(match)
+    return selected
 
 
 def _materialize(cur, source, offsets, cfg):
     sr, sc, er, ec = cur["fn_pos"]
-    code = extract_text(source, offsets, sr, sc, er, ec)
+    start, end = offsets[sr] + sc, offsets[er] + ec
+    code = bytearray(source[start:end])
+    for child in cur.get('children', []):
+        # C nested type definitions can also declare a field. Keep its type
+        # reference ("struct Inner field;") while removing the nested body.
+        position = child.get('body_pos') if cfg.get('lang') == 'c' else None
+        cs, cc, ce, ec_child = position or child.get('remove_pos', child['fn_pos'])
+        child_start, child_end = offsets[cs] + cc, offsets[ce] + ec_child
+        # Preserve byte positions and line endings; no child text remains here.
+        code[child_start - start:child_end - start] = re.sub(
+            rb'[^\r\n]', b' ', source[child_start:child_end]
+        )
+        if cfg.get('lang') == 'python':
+            # Removing a definition may leave an empty suite, even inside an if
+            # or try. A pass at the original def/class location keeps it valid.
+            psr, psc, _, _ = child['fn_pos']
+            placeholder = offsets[psr] + psc - start
+            code[placeholder:placeholder + 4] = b'pass'
+    code = code.decode('utf-8')
     name = None
     if "name_pos" in cur:
         nsr, nsc, ner, nec = cur["name_pos"]

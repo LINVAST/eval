@@ -81,12 +81,48 @@ esac
         self.assertEqual(counts['files_extracted'], 7)
         self.assertEqual(counts['zero_match_files'], 1)
         self.assertEqual(counts['matched_constructs'], 6)
-        self.assertEqual(counts['units_attempted'], 6)
-        self.assertEqual(counts['accepted_asts'], 2)
+        self.assertEqual(counts['unique_constructs'], 5)
+        self.assertEqual(counts['duplicate_constructs'], 1)
+        self.assertEqual(counts['units_attempted'], 5)
+        self.assertEqual(counts['accepted_asts'], 1)
         for key in ('parser_rejections', 'builder_rejections', 'unsupported_language_rejections', 'timeouts'):
             self.assertEqual(counts[key], 1)
         self.assertEqual(counts['infrastructure_failures'], 0)
-        self.assertEqual(sum(event['event'] == 'unit_result' for event in events), 6)
+        self.assertEqual(sum(event['event'] == 'unit_result' for event in events), 5)
+
+    def test_identical_inputs_across_projects_evaluated_once(self):
+        self.source('a.c', self.unit())
+        other = self.root / 'lang/c/other'
+        other.mkdir()
+        (other / 'copy.c').write_text(self.unit())
+        code, summary, events = self.run_evaluation(['lang/c'])
+        self.assertEqual(code, 0)
+        counts = summary['totals']
+        self.assertEqual(counts['matched_constructs'], 2)
+        self.assertEqual(counts['duplicate_constructs'], 1)
+        self.assertEqual(counts['unique_constructs'], 1)
+        self.assertEqual(counts['units_attempted'], 1)
+        duplicate = next(event for event in events if event['event'] == 'duplicate_construct')
+        self.assertEqual(duplicate['duplicate_of']['project'], 'lang/c/other')
+        self.assertEqual(duplicate['duplicate_of']['file'], 'copy.c')
+
+    def test_identical_inputs_in_different_languages_are_not_duplicates(self):
+        self.source('a.c', self.unit())
+        other = self.root / 'lang/go/other'
+        other.mkdir(parents=True)
+        (other / 'a.go').write_text(self.unit())
+        code, summary, _ = self.run_evaluation(['lang/c', 'lang/go'])
+        self.assertEqual(code, 0)
+        self.assertEqual(summary['totals']['duplicate_constructs'], 0)
+        self.assertEqual(summary['totals']['units_attempted'], 2)
+
+    def test_identical_rejected_inputs_do_not_repeat_cli_invocation(self):
+        self.source('a.c', self.unit('builder_error') + self.unit('builder_error'))
+        code, summary, _ = self.run_evaluation()
+        self.assertEqual(code, 0)
+        self.assertEqual(summary['totals']['matched_constructs'], 2)
+        self.assertEqual(summary['totals']['duplicate_constructs'], 1)
+        self.assertEqual(summary['totals']['builder_errors'], 1)
 
     def test_failed_extractor_partial_output_is_never_counted(self):
         self.source('a.c', 'FAIL\n' + self.unit())
@@ -156,6 +192,21 @@ esac
         code, summary, _ = self.run_evaluation(['lang/c/missing'])
         self.assertEqual(code, 1)
         self.assertEqual(summary['totals']['infrastructure_failures'], 1)
+
+    def test_removed_repository_left_on_disk_is_not_discovered(self):
+        self.source('a.c', self.unit())
+        (self.root / '.gitmodules').write_text(
+            '[submodule "lang/c/sample"]\n path = lang/c/sample\n'
+        )
+        retired = self.root / 'lang/java/jdk'
+        retired.mkdir(parents=True)
+        (retired / 'A.java').write_text(self.unit())
+        code, summary, _ = self.run_evaluation(['.'])
+        self.assertEqual(code, 0)
+        self.assertEqual(list(summary['projects']), ['lang/c/sample'])
+        code, summary, _ = self.run_evaluation(['lang/java/jdk'])
+        self.assertEqual(code, 1)
+        self.assertEqual(summary['totals']['units_attempted'], 0)
 
     def test_failed_publish_does_not_use_stale_cli(self):
         self.source('a.c', self.unit())

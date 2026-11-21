@@ -2,6 +2,8 @@
 """Run evaluation with checked producers and explicit outcome accounting."""
 
 import argparse
+import configparser
+import hashlib
 import json
 import math
 import os
@@ -20,6 +22,7 @@ OUTCOMES = {0: 'accepted_asts', 10: 'parser_rejections',
             13: 'builder_errors'}
 COUNTERS = ('files_discovered', 'files_excluded', 'files_extracted',
             'extraction_failures', 'zero_match_files', 'matched_constructs',
+            'unique_constructs', 'duplicate_constructs',
             'whole_files_submitted', 'units_attempted', 'parser_rejections',
             'builder_rejections', 'builder_errors', 'cli_errors',
             'unsupported_language_rejections', 'timeouts',
@@ -44,6 +47,24 @@ class Evaluation:
         self.project = None
         self.context = {}
         self.dependencies = {}
+        self.seen_constructs = {}
+
+    def unique_construct(self, lang, unit, index):
+        digest = hashlib.sha256(unit['wrapped'].encode('utf-8')).hexdigest()
+        key = (lang, digest)
+        identity = {**self.context, 'unit_index': index, **{
+            field: unit[field] for field in ('name', 'type', 'startLine', 'endLine')
+        }}
+        if key in self.seen_constructs:
+            self.count('duplicate_constructs')
+            self.event('duplicate_construct', unit_index=index, sha256=digest,
+                       duplicate_of=self.seen_constructs[key], **{
+                           field: unit[field] for field in ('name', 'type', 'startLine', 'endLine')
+                       })
+            return False
+        self.seen_constructs[key] = identity
+        self.count('unique_constructs')
+        return True
 
     def event(self, event, **details):
         record = {'event': event, **self.context, **details}
@@ -61,14 +82,30 @@ class Evaluation:
         raise InfrastructureError(f'{stage}: {reason}')
 
     def inventory(self, targets):
+        registered = None
+        modules = self.root / '.gitmodules'
+        if modules.is_file():
+            config = configparser.ConfigParser(interpolation=None)
+            config.read_string(modules.read_text())
+            registered = sorted(
+                self.root / section['path'] for section in config.values()
+                if section.get('path', '').startswith('lang/')
+            )
         projects = []
         for target in targets:
             base = self.root / target
             if target in ('.', 'lang'):
-                projects.extend(sorted((self.root / 'lang').glob('*/*/')))
+                projects.extend(registered if registered is not None
+                                else sorted((self.root / 'lang').glob('*/*/')))
             elif base.parent == self.root / 'lang':
-                projects.extend(sorted(p for p in base.iterdir() if p.is_dir()))
+                projects.extend([p for p in registered if p.parent == base]
+                                if registered is not None
+                                else sorted(p for p in base.iterdir() if p.is_dir()))
             else:
+                if registered is not None and not any(
+                    base == p or p in base.parents for p in registered
+                ):
+                    self.fail('configuration', f'not a configured corpus project: {target}')
                 projects.append(base)
         plan = []
         seen = set()
@@ -218,6 +255,8 @@ class Evaluation:
                         units = self.extract(lang, path)
                         print(f'  [{self.context["file"]}] matched constructs: {len(units)}', flush=True)
                         for index, unit in enumerate(units):
+                            if not self.unique_construct(lang, unit, index):
+                                continue
                             wrapper = Path(directory) / f'wrapper.{extension}'
                             wrapper.write_bytes(unit['wrapped'].encode('utf-8'))
                             self.evaluate_unit(wrapper, unit_index=index, **{
@@ -234,6 +273,8 @@ class Evaluation:
             print(f'Evaluation aborted: {error}', file=sys.stderr)
         finally:
             summary = {'status': status, 'dependencies': self.dependencies,
+                       'selection': {'declarations': 'whole_file' if self.whole_files else 'all declarations with extracted children removed',
+                                     'deduplication': 'none' if self.whole_files else 'language and exact wrapped UTF-8 input'},
                        'totals': self.total, 'projects': self.projects}
             (self.output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
             self.context = {}
