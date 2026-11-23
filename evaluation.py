@@ -389,8 +389,9 @@ def main():
         timeout = float(os.environ.get('FUN_TIMEOUT', '60'))
     except ValueError:
         timeout = float('nan')
+    cli_path = Path(os.getenv('LINVAST_CLI_PATH', str(root / 'CLI/CLI/bin/Release/eval-publish/CLI')))
     print(f'Logs and summary: {output}', flush=True)
-    return Evaluation(root, root / 'CLI/CLI/bin/Release/eval-publish/CLI',
+    return Evaluation(root, cli_path,
                       root / 'extractors/extract-functions.py', output,
                       timeout, args.whole_files).run(args.targets)
 

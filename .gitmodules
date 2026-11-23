@@ -18,11 +18,6 @@
 	url = https://github.com/kiishor/miniML-Parser
 	shallow = true
 
-[submodule "lang/c/neovim"]
-	path = lang/c/neovim
-	url = https://github.com/neovim/neovim.git
-	shallow = true
-
 [submodule "lang/c/packcc"]
 	path = lang/c/packcc
 	url = https://github.com/arithy/packcc
@@ -142,16 +137,6 @@
 	url = https://github.com/pallets/flask
 	shallow = true
 
-[submodule "lang/kotlin/kotlinx-benchmark"]
-	path = lang/kotlin/kotlinx-benchmark
-	url = https://github.com/Kotlin/kotlinx-benchmark
-	shallow = true
-
-[submodule "lang/kotlin/kotlin-benchmarks"]
-	path = lang/kotlin/kotlin-benchmarks
-	url = https://github.com/Kotlin/kotlin-benchmarks
-	shallow = true
-
 [submodule "lang/kotlin/detekt"]
 	path = lang/kotlin/detekt
 	url = https://github.com/detekt/detekt
@@ -165,4 +150,14 @@
 [submodule "lang/kotlin/okhttp"]
 	path = lang/kotlin/okhttp
 	url = https://github.com/square/okhttp
+	shallow = true
+
+[submodule "lang/kotlin/kotlinx-coroutines"]
+	path = lang/kotlin/kotlinx-coroutines
+	url = https://github.com/Kotlin/kotlinx.coroutines
+	shallow = true
+
+[submodule "lang/kotlin/koin"]
+	path = lang/kotlin/koin
+	url = https://github.com/InsertKoinIO/koin
 	shallow = true
